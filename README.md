@@ -6,205 +6,6 @@ Primary objectives include:
 * Support for configuration-based outbound proxy support at the model level to allow integration with enterprise-level security requirements.
 * A set of tools to provide greater control over generated prompts. This is done by adding hooks to the existing langchain packages.
 
-## Installation
-```bash 
-pip install connectchain
-```
-
-## Usage
-
-Connectchain works with a combination of environmental variables and a configuration `.yml` file. Environmental variables are defined in the `config.yml` and their corresponding values set in the `.env` file. The path to the `config.yml` is defined as an variable in the `.env` file. *You MUST create both a `config.yml` and `.env` file to use the module.* The [example config file](./connectchain/config/example.config.yml) can be found at [`./connectchain/config/example.config.yml`](./connectchain/config/example.config.yml). See the [example env file](example.env) for more details. You can copy and rename both files; replacing the required values with your ids and secrets and adding additional supported options as needed.
-
-### `connectchain.lcel`: For the simplest Use Cases
-[LangChain Expression Language (LCEL)](https://python.langchain.com/docs/expression_language/) supports adding a model() method. Now one can execute a chain by following the LCEL syntax with a minor tweak: 
-* when you add the () to the model, it gets instantiated on the fly:
-
-```python
-from connectchain.lcel import model
-...
-prompt = PromptTemplate(
-    input_variables=["music_genre"],
-    template="Tell me about {music_genre} music."
-)
-
-# using langchain directly this would be:
-# chain = prompt | model
-chain = prompt | model()
-
-out = chain.invoke({"music_genre": "classical"})
-print(out)
-```
-You can have multiple model configurations defined in the `config.yml`. These are accessed via connectchain's LCEL support by passing the model configuration index (the key under which the model's configuration is defined in the `config.yml`) to the `model` method of connectchain. The following is an example using `2` as the model configuraiton index assuming it is defined in the `config.yml > models` section:
-
-```python
-chain = prompt | model('2')
-```
-
-_Optionally_ `eas`, `proxy` and `cert` sections of the `config.yml` can be overriden by model definitions. To do this, simply define those sections in a model config (again in the `config.yml`) and re-define any values you want to override. For example, if you want to override all three options for a model, you can define it as follows:
-
-```yaml
-models:
-  foo:
-    eas:
-      id_key: ... # Env key for id
-      secret_key: ... # Env key for secret
-      scope: [
-        # ...
-      ]
-    cert:
-        cert_path: /path/to/cert
-        cert_name: model_specific_cert.crt
-        cert_size: 2048
-    proxy:
-        host: proxy.foo.com
-        port: 8080
-    # ... continue the model configuration
-```
-
-Add logging or auditing to the chain:
-```python
-from connectchain.lcel import Logger
-... 
-class PrintLogger(Logger):
-    def print(self, payload):
-        print(payload)
-...
-logger = PrintLogger()
-chain = prompt | logger.log() | model() | logger.log()
-```
-
-There is a portable solution for the "regular" prompt template-based requests. It is portable, i.e. no need to directly import a model provider package (e.g. `openai`). Additionally, prompts can be validated before being sent to the LLM.
-
-```python
-from connectchain.orchestrators import PortableOrchestrator
-
-orchestrator = PortableOrchestrator.from_prompt_template(
-    prompt_template="Tell me about the climate in {area_of_interest}.", input_variables=["area_of_interest"])
-output = orchestrator.run('Peru')
-```
-
-Again, you can have multiple models defined in the `config.yml`. For example, a second model could be defined as '2' in the config which configures a different model, a different API and even a different EAS and would look like this:
-
-```python
-orchestrator = PortableOrchestrator.from_prompt_template(
-    prompt_template="Tell me about the climate in {area_of_interest}.", input_variables=["area_of_interest"], index='2')
-```
-
-### `connectchain.utils`: For direct use with a model provider (e.g. OpenAI)
-
-```python  
-from connectchain.utils import get_token_from_env
-
-...
-auth_token = get_token_from_env()
-...
-openai.api_key = auth_token
-```
-
-Same token can be used in lieu of the OPENAI_API_KEY:
-
-```python
-my_api_base = "<insert_your_api_base_here>"
-llm = AzureOpenAI(
-        engine='gpt-35',
-        model_name='gpt-35-turbo',
-        openai_api_key=auth_token,
-        openai_api_base=my_api_base)
-
-chain = LLMChain(llm=llm, prompt=prompt)
-```
-
-### `connectchain.prompts`: A package to provide greater control over generated prompts before they are passed to the LLM by providing an entrypoint for sanitizer implementations.
-
-```python
-from connectchain.prompts import ValidPromptTemplate
-from connectchain.utils.exceptions import OperationNotPermittedException
-
-def my_sanitizer(query: str) -> str:
-    """IMPORTANT: This is a simplified example designed to showcase concepts and should not used
-    as a reference for production code. The features are experimental and may not be suitable for
-    use in sensitive environments or without additional safeguards and testing.
-
-    Any use of this code is at your own risk."""
-    pattern = r'BADWORD'
-
-    if re.search(pattern, query):
-        print("BADWORD found!")
-        raise OperationNotPermittedException("Illegal execution detected: {}".format(query))
-    else:
-        return query
-...
-prompt_template = "Tell me about {food_type} production.}"
-prompt = ValidPromptTemplate(
-    output_sanitizer=my_sanitizer,
-    input_variables=["food_type"],
-    template=prompt_template
-)
-
-
-chain = LLMChain(llm=llm, prompt=prompt)
-# the following will throw an exception
-output = chain.run('BADWORD')
-print(output)
-
-```
-### `connectchain.chains`: An extension of the langchain chains.
-We add hooks to improve control over code that is executed by providing an entrypoint for sanitizer implementations.
-
-```python   
-from connectchain.chains import ValidLLMChain
-
-def my_sanitizer(query: str) -> str:
-    """IMPORTANT: This is a simplified example designed to showcase concepts and should not used
-    as a reference for production code. The features are experimental and may not be suitable for
-    use in sensitive environments or without additional safeguards and testing.
-
-    Any use of this code is at your own risk."""
-    # define your own logic here.
-    # for example, can call an API to verify the content of the code
-    pass
-
-chain = ValidLLMChain(llm=llm, prompt=prompt, output_sanitizer=my_sanitizer)
-
-output = chain.run('drought resistant wheat')
-print(output)
-
-try:
-    output = chain.run('BADWORD')
-except OperationNotPermittedException as e:
-    print(e)
-
-```
-
-### `connectchain.tools`: An extension of the langchain tools. 
-We add hooks to improve control over code that is executed by providing an entrypoint for sanitizer implementations.
-
-```python
-from connectchain.tools import ValidPythonREPLTool
-
-def my_sanitizer(query: str) -> str:
-    """IMPORTANT: This is a simplified example designed to showcase concepts and should not used
-    as a reference for production code. The features are experimental and may not be suitable for
-    use in sensitive environments or without additional safeguards and testing.
-
-    Any use of this code is at your own risk."""
-    # define your own logic here.
-    # for example, can call an API to verify the content of the code
-    pass
-
-agent_executor = create_python_agent(
-    llm=llm,
-    tool=ValidPythonREPLTool(my_sanitizer), # normally, you would use PythonREPLTool
-    verbose=True,
-    agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    prompt="Just output the result, no other text or comments.",
-)
-
-output = agent_executor.run("what is 10 to the power of 10?")
-print(output)
-
-```
-
 ## Contributing
 
 We welcome Your interest in the American Express Open Source Community on GitHub. Any Contributor to
@@ -223,3 +24,186 @@ Any contributions made under this project will be governed by the
 
 This project adheres to the [American Express Community Guidelines](./CODE_OF_CONDUCT.md). By
 participating, you are expected to honor these guidelines.
+
+## Installation
+
+To set up the development environment for Connect Chain using Java 17 and Maven, follow these steps:
+
+1. Install Java Development Kit (JDK) 17:
+   - Download and install JDK 17 from the official Oracle website or use an OpenJDK distribution.
+   - Set the JAVA_HOME environment variable to point to your JDK installation directory.
+
+2. Install Maven:
+   - Download Maven from the official Apache Maven website.
+   - Extract the archive and add the bin directory to your system's PATH.
+
+3. Clone the Connect Chain repository:
+   ```
+   git clone https://github.com/americanexpress/connectchain.git
+   cd connectchain
+   ```
+
+4. Build the project using Maven:
+   ```
+   mvn clean install
+   ```
+
+5. To run tests:
+   ```
+   mvn test
+   ```
+
+6. To add Connect Chain as a dependency in your project, add the following to your `pom.xml`:
+   ```xml
+   <dependency>
+       <groupId>com.americanexpress</groupId>
+       <artifactId>connectchain</artifactId>
+       <version>1.0.0</version> <!-- Replace with the latest version -->
+   </dependency>
+   ```
+
+7. Sync your project to download the dependencies.
+
+Now your development environment is set up and ready to use Connect Chain with Java 17 and Maven.
+
+## Configuration
+
+Connect Chain uses YAML configuration files for easy setup and management. Here's an example of how to configure and load the settings in Java:
+
+1. Create a `config.yaml` file in your project's resources directory:
+
+```yaml
+llm:
+  provider: openai
+  model: gpt-3.5-turbo
+  temperature: 0.7
+  max_tokens: 150
+
+auth:
+  type: jwt
+  service_url: https://auth.example.com
+
+proxy:
+  enabled: true
+  host: proxy.example.com
+  port: 8080
+
+prompt_hooks:
+  - name: content_filter
+    type: pre_processing
+    class: com.example.hooks.ContentFilterHook
+  - name: response_formatter
+    type: post_processing
+    class: com.example.hooks.ResponseFormatterHook
+```
+
+2. Load the configuration in your Java application:
+
+```java
+import org.yaml.snakeyaml.Yaml;
+import java.io.InputStream;
+import java.util.Map;
+
+public class ConfigLoader {
+    public static Map<String, Object> loadConfig() {
+        Yaml yaml = new Yaml();
+        try (InputStream inputStream = ConfigLoader.class
+                .getClassLoader()
+                .getResourceAsStream("config.yaml")) {
+            return yaml.load(inputStream);
+        } catch (Exception e) {
+            throw new RuntimeException("Error loading configuration", e);
+        }
+    }
+}
+
+// Usage
+Map<String, Object> config = ConfigLoader.loadConfig();
+```
+
+3. Access configuration values:
+
+```java
+String llmProvider = (String) ((Map<String, Object>) config.get("llm")).get("provider");
+boolean proxyEnabled = (boolean) ((Map<String, Object>) config.get("proxy")).get("enabled");
+```
+
+This configuration approach allows for easy management of Connect Chain settings and integration with enterprise systems.
+
+## Examples
+
+Here are some examples demonstrating the usage of ConnectChain's core features:
+
+### 1. Initializing ConnectChain
+
+```java
+import com.americanexpress.connectchain.ConnectChain;
+import com.americanexpress.connectchain.config.ConnectChainConfig;
+
+public class ConnectChainExample {
+    public static void main(String[] args) {
+        ConnectChainConfig config = new ConnectChainConfig.Builder()
+            .withLlmProvider("openai")
+            .withModel("gpt-3.5-turbo")
+            .withTemperature(0.7)
+            .withMaxTokens(150)
+            .build();
+
+        ConnectChain connectChain = new ConnectChain(config);
+    }
+}
+```
+
+### 2. Using Enterprise Auth Service
+
+```java
+import com.americanexpress.connectchain.auth.EnterpriseAuthService;
+
+public class AuthExample {
+    public static void main(String[] args) {
+        EnterpriseAuthService authService = new EnterpriseAuthService("https://auth.example.com");
+        String jwtToken = authService.generateJwtToken();
+        
+        // Use the JWT token for API calls
+        connectChain.setAuthToken(jwtToken);
+    }
+}
+```
+
+### 3. Configuring Outbound Proxy
+
+```java
+import com.americanexpress.connectchain.proxy.ProxyConfig;
+
+public class ProxyExample {
+    public static void main(String[] args) {
+        ProxyConfig proxyConfig = new ProxyConfig("proxy.example.com", 8080);
+        connectChain.setProxyConfig(proxyConfig);
+    }
+}
+```
+
+### 4. Using Prompt Hooks
+
+```java
+import com.americanexpress.connectchain.hooks.PromptHook;
+
+public class ContentFilterHook implements PromptHook {
+    @Override
+    public String process(String input) {
+        // Implement content filtering logic
+        return filteredInput;
+    }
+}
+
+public class HookExample {
+    public static void main(String[] args) {
+        PromptHook contentFilter = new ContentFilterHook();
+        connectChain.addPreProcessingHook(contentFilter);
+        
+        String response = connectChain.generateResponse("Your prompt here");
+    }
+}
+```
+
+For more detailed examples, please refer to the Java files in the `examples` directory.
